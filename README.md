@@ -4,7 +4,7 @@ This crate provides an interface to [UNI-T UT61E Digital Multimeters](https://me
 
 This is a port of [ut61e_py](https://github.com/4x1md/ut61e_py).
 
-Currently, this crate requires my fork of the [`cp211x_uart` crate](https://crates.io/crates/cp211x_uart); my fork:
+Currently, this crate requires [my fork](https://github.com/cstrahan/cp211x_uart) of the [`cp211x_uart` crate](https://crates.io/crates/cp211x_uart); my fork:
 
 - uses the [`hidapi` crate](https://crates.io/crates/hidapi), instead of the unmaintained [`hid` crate](https://crates.io/crates/hid).
 - fixes several bugs that either result in panics or truncated data
