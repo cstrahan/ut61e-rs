@@ -1,0 +1,3 @@
+# CP2110 - UT171A multimeter etc.
+SUBSYSTEM=="usb", ATTR{idVendor}=="10c4", ATTR{idProduct}=="ea80", MODE="0660", GROUP="plugdev", TAG+="uaccess", TAG+="udev-acl"
+KERNEL=="hidraw*", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea80", MODE="0660", GROUP="plugdev", TAG+="uaccess", TAG+="udev-acl"
