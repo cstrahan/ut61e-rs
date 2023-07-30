@@ -1,55 +1,56 @@
 use std::time::Duration;
 
 use cp211x_uart::{DataBits, FlowControl, HidUart, Parity, StopBits, UartConfig};
-use ut61e::UT61E;
 
-// thread 'main' panicked at 'range end index 15 out of range for slice of length 14', /home/cstrahan/src/cp211x_uart/src/lib.rs:336:21
+fn log_measurements(device: hidapi::HidDevice) -> Result<(), ut61e::Error> {
+    let mut uart = HidUart::new(device).unwrap();
 
-fn run() -> Result<(), cp211x_uart::Error> {
-    let manager = hidapi::HidApi::new()?;
+    let config = UartConfig {
+        baud_rate: 19200,
+        data_bits: DataBits::Bits7,
+        stop_bits: StopBits::Short,
+        parity: Parity::Odd,
+        flow_control: FlowControl::None,
+    };
+
+    uart.set_config(&config).unwrap();
+    uart.set_read_timeout(Duration::from_millis(50));
+    uart.set_write_timeout(Duration::from_millis(500));
+    uart.flush_fifos(true, true).unwrap();
+
+    let mut stream = ut61e::Stream::new();
+
+    loop {
+        let Some(ch) = read_char(&mut uart).expect("couldn't read char") else { continue; };
+        let Some(raw_message) = stream.push(ch) else { continue };
+        let message = ut61e::parse_message(&raw_message)?;
+        println!("{message:#?}\n\n");
+    }
+}
+
+fn read_char(port: &mut cp211x_uart::HidUart) -> Result<Option<u8>, cp211x_uart::Error> {
+    let mut buf = [0; 1];
+    let n = port.read(&mut buf)?;
+    if n == 0 {
+        Ok(None)
+    } else {
+        Ok(Some(buf[0]))
+    }
+}
+
+fn main() {
+    let manager = hidapi::HidApi::new().expect("couldn't init hidapi");
     let device_info = manager
         .device_list()
         .filter(|device_info| {
             device_info.vendor_id() == 0x10C4 && device_info.product_id() == 0xEA80
         })
-        .next();
+        .next()
+        .expect("couldn't find device");
 
-    if let Some(device_info) = device_info {
-        let device = device_info.open_device(&manager)?;
+    let device = device_info
+        .open_device(&manager)
+        .expect("couldn't open device");
 
-        let mut uart = HidUart::new(device).unwrap();
-
-        let config = UartConfig {
-            baud_rate: 19200,
-            data_bits: DataBits::Bits7,
-            stop_bits: StopBits::Short,
-            parity: Parity::Odd,
-            flow_control: FlowControl::None,
-        };
-
-        uart.set_config(&config).unwrap();
-        uart.set_read_timeout(Duration::from_millis(50));
-        uart.set_write_timeout(Duration::from_millis(500));
-        uart.flush_fifos(true, true).unwrap();
-
-        // uart.write(&[0x01, 0x02, 0x03][..]).unwrap();
-        // let mut buf: [u8; 256] = [0; 256];
-        // uart.read(&mut buf).unwrap();
-
-        let mut ut61e = UT61E::new(uart);
-
-        loop {
-            let message = ut61e.read_message();
-            println!("{message:?}\n\n");
-
-            // std::thread::sleep(Duration::from_secs(1));
-        }
-    } else {
-        println!("no device detected");
-        Ok(())
-    }
-}
-
-fn main() {
-    run().unwrap()
+    log_measurements(device).unwrap()
 }

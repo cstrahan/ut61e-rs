@@ -5,7 +5,9 @@ edition = "2021"
 license = "MIT"
 
 [dependencies]
-cp211x_uart = "^0.2.2"
 heapless = "^0.7.16"
 hidapi = "^2.4.1"
 onlyerror = "0.1.3"
+
+[dev-dependencies]
+cp211x_uart = { path = "../cp211x_uart" }

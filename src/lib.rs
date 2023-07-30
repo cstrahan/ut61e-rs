@@ -1,4 +1,7 @@
-use cp211x_uart::HidUart;
+//! # UT61E
+//!
+//! This crate provides a parser for
+//! [UNI-T UT61E Digital Multimeters](https://meters.uni-trend.com/product/ut61-series) measument messages.
 
 /*
 Bus 002 Device 020: ID 10c4:ea80 Silicon Labs CP2110 HID UART Bridge
@@ -84,6 +87,7 @@ const HZ: u8 = 0b00000001;
 /// Byte 11 bit 1
 const HOLD: u8 = 0b00000010;
 
+/// A parsed UT61E message.
 #[derive(Debug)]
 pub struct Message {
     pub percent: bool,
@@ -225,134 +229,119 @@ const MEAS_TYPE: [Option<(&str, Option<&RangeTable>)>; 16] = [
 
 #[derive(Debug, onlyerror::Error)]
 pub enum Error {
-    /// Message could not be read.
-    Read,
     /// Message failed to parse.
     Parse,
-    /// Uart error.
-    Uart(#[from] cp211x_uart::Error),
 }
 
-pub struct UT61E {
-    port: HidUart,
+/// Represents a stream of [RawMessage][crate::RawMessage], delimited by `b"\r\n"`.
+pub struct Stream {
+    deq: heapless::Deque<u8, DATA_LEN>,
 }
 
-impl UT61E {
-    pub fn new(port: HidUart) -> UT61E {
-        UT61E { port }
+impl Stream {
+    pub fn new() -> Stream {
+        let deq = heapless::Deque::new();
+        Self { deq }
     }
 
-    pub fn read_message(&mut self) -> Result<Message, Error> {
-        let mut raw_data: [u8; 14] = [0; 14];
-        self.read_raw_message(&mut raw_data)?;
+    /// Pushes a byte into the stream.
+    ///
+    /// Returns a [RawMessage][crate::RawMessage] if found.
+    pub fn push(&mut self, ch: u8) -> Option<RawMessage> {
+        let prev = self.deq.back().copied();
 
-        let percent = raw_data[7] & PERCENT != 0;
-        let minus = raw_data[7] & NEG != 0;
-        let low_battery = raw_data[7] & LOW_BAT != 0;
-        let ol = raw_data[7] & OL != 0;
-        let delta = raw_data[8] & DELTA != 0;
-        let ul = raw_data[9] & UL != 0;
-        let max = raw_data[9] & MAX != 0;
-        let min = raw_data[9] & MIN != 0;
-        let dc = raw_data[10] & DC != 0;
-        let ac = raw_data[10] & AC != 0;
-        let auto = raw_data[10] & AUTO != 0;
-        let hz = raw_data[10] & HZ != 0;
-        let hold = raw_data[11] & HOLD != 0;
-
-        let meas_type_index = (raw_data[6] & 0x0F) as usize;
-        let meas_type = MEAS_TYPE[meas_type_index].ok_or(Error::Parse)?;
-        let range_id = (raw_data[0] & 0b00000111) as usize;
-
-        let mode = meas_type.0;
-        let (range, units, multiplier) = if percent {
-            RANGE_PERCENT[range_id].ok_or(Error::Parse)?
-        } else if hz {
-            RANGE_F[range_id].ok_or(Error::Parse)?
-        } else {
-            let range_table = meas_type.1.ok_or(Error::Parse)?;
-            range_table[range_id].ok_or(Error::Parse)?
-        };
-
-        let mut val = 0f64;
-        for n in 1..=5 {
-            let digit = (raw_data[n] & DIGIT_MASK) as f64;
-            val = val * 10.0 + digit;
+        if self.deq.is_full() {
+            self.deq.pop_front();
         }
-        val *= multiplier;
-        if minus {
-            val = -val;
-        }
+        let _ = self.deq.push_back(ch);
 
-        let (norm_val, norm_units) = normalize_val(val, units);
-
-        let message = Message {
-            percent,
-            minus,
-            low_battery,
-            ol,
-            delta,
-            ul,
-            max,
-            min,
-            ac,
-            dc,
-            auto,
-            hz,
-            hold,
-            mode,
-            range,
-            units,
-            val,
-            norm_val,
-            norm_units,
-        };
-
-        Ok(message)
-    }
-
-    fn read_exact(&mut self, buffer: &mut [u8]) -> Result<(), Error> {
-        let mut pos = 0;
-        while pos < buffer.len() {
-            pos += self.port.read(&mut buffer[pos..])?;
-        }
-
-        Ok(())
-    }
-
-    /// Reads from RX until CRLF is found,
-    /// or gives up after a reasonable number of attempts.
-    fn read_raw_message(&mut self, data: &mut [u8; DATA_LEN]) -> Result<(), Error> {
-        const MAX_RETRIES: usize = 10;
-
-        let mut buf = [0; 1];
-        let mut deq: heapless::Deque<u8, 14> = heapless::Deque::new();
-
-        for _ in 0..(MAX_RETRIES * DATA_LEN) {
-            self.read_exact(&mut buf)?;
-
-            let prev = deq.back().copied();
-
-            if deq.is_full() {
-                deq.pop_front();
-            }
-
-            let _ = deq.push_back(buf[0]);
-
-            if buf[0] == LF {
-                if prev == Some(CR) && deq.is_full() {
-                    let (s0, s1) = deq.as_slices();
-                    data[0..s0.len()].copy_from_slice(s0);
-                    data[s0.len()..deq.len()].copy_from_slice(s1);
-                    return Ok(());
-                } else {
-                    deq.clear();
-                }
+        if ch == LF {
+            if prev == Some(CR) && self.deq.is_full() {
+                let mut data = [0; DATA_LEN];
+                let (s0, s1) = self.deq.as_slices();
+                data[0..s0.len()].copy_from_slice(s0);
+                data[s0.len()..self.deq.len()].copy_from_slice(s1);
+                self.deq.clear();
+                return Some(data);
+            } else {
+                self.deq.clear();
             }
         }
 
-        Err(Error::Read)
+        None
     }
+}
+
+/// Represents a raw UT61E message.
+///
+/// The messages sent by UT61E are 14 bytes long, and end in `b"\r\n"`.
+pub type RawMessage = [u8; DATA_LEN];
+
+/// Parse a [Message][crate::Message] from a [RawMessage][crate::RawMessage].
+pub fn parse_message(raw_data: &RawMessage) -> Result<Message, Error> {
+    let percent = raw_data[7] & PERCENT != 0;
+    let minus = raw_data[7] & NEG != 0;
+    let low_battery = raw_data[7] & LOW_BAT != 0;
+    let ol = raw_data[7] & OL != 0;
+    let delta = raw_data[8] & DELTA != 0;
+    let ul = raw_data[9] & UL != 0;
+    let max = raw_data[9] & MAX != 0;
+    let min = raw_data[9] & MIN != 0;
+    let dc = raw_data[10] & DC != 0;
+    let ac = raw_data[10] & AC != 0;
+    let auto = raw_data[10] & AUTO != 0;
+    let hz = raw_data[10] & HZ != 0;
+    let hold = raw_data[11] & HOLD != 0;
+
+    let meas_type_index = (raw_data[6] & 0x0F) as usize;
+    let meas_type = MEAS_TYPE[meas_type_index].ok_or(Error::Parse)?;
+    let range_id = (raw_data[0] & 0b00000111) as usize;
+
+    let mode = meas_type.0;
+    let (range, units, multiplier) = if percent {
+        RANGE_PERCENT[range_id].ok_or(Error::Parse)?
+    } else if hz {
+        RANGE_F[range_id].ok_or(Error::Parse)?
+    } else {
+        let range_table = meas_type.1.ok_or(Error::Parse)?;
+        range_table[range_id].ok_or(Error::Parse)?
+    };
+
+    let mut val = 0f64;
+    for n in 1..=5 {
+        let digit = (raw_data[n] & DIGIT_MASK) as f64;
+        val = val * 10.0 + digit;
+    }
+    val *= multiplier;
+    if minus {
+        val = -val;
+    }
+
+    let (norm_val, norm_units) = normalize_val(val, units);
+
+    let message = Message {
+        percent,
+        minus,
+        low_battery,
+        ol,
+        delta,
+        ul,
+        max,
+        min,
+        ac,
+        dc,
+        auto,
+        hz,
+        hold,
+        mode,
+        range,
+        units,
+        val,
+        norm_val,
+        norm_units,
+    };
+
+    Ok(message)
 }
 
 /// Normalizes measured value to standard units. Voltage
